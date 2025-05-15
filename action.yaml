@@ -1,0 +1,32 @@
+name: "Action Harden Runner"
+author: "G. Tsigkourakos"
+description: "Metapod used Harden. It's very effective."
+inputs:
+  config:
+    description: "Configuration file path. To use this you have to checkout first and put your own path as input."
+    required: false
+  mode:
+    description: "Mode to run the action. Allowed: 'log', 'block'. Default: 'log'."
+    required: false
+    default: "log"
+  block_na:
+    description: "Block all N/A connections. Default: 'false'."
+    required: false
+    default: "false"
+  interval:
+    description: "Monitoring polling interval in seconds. Default: '1'."
+    required: false
+    default: "1"
+  debug:
+    description: "Enable debug mode. Default: 'false'."
+    required: false
+    default: "false"
+
+runs:
+  using: "node20"
+  main: "dist/index.js"
+  post: "dist/post/index.js"
+
+branding:
+  icon: "shield"
+  color: "blue"

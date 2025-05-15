@@ -1,0 +1,24 @@
+{
+  "name": "action-harden-runner",
+  "version": "1.0.0",
+  "description": "This action aims to harden runner workflows via multiple methods. \\ Metapod used Harden. It's very effective.",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "build": "ncc build src/index.js -o dist && ncc build src/post.js -o dist/post && ncc build src/monitor.js -o dist/monitor && ncc build src/utils.js -o dist/utils",
+    "test": "jest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "console-table-printer": "^2.12.1",
+    "fs-extra": "^11.3.0",
+    "ip-cidr": "^4.0.2",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3",
+    "jest": "^29.7.0"
+  }
+}

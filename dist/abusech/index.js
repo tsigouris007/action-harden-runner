@@ -1001,6 +1001,112 @@ exports["default"] = mk_wcwidth;
 
 /***/ }),
 
+/***/ 744:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+// src/abusech.js
+const https = __nccwpck_require__(692);
+const { logger, cleanupJson } = __nccwpck_require__(804);
+const debugMode = process.env["INPUT_DEBUG"] === "true";
+
+function abuseSeverity(data) {
+  const abuseConfidenceScore = parseInt(data.abuseConfidenceScore || 0, 10);
+  const totalReports = parseInt(data.totalReports || 0, 10);
+  const isTor = data.isTor === true;
+  const lastReportedAt = data.lastReportedAt;
+  const isWhitelisted = data.isWhitelisted === true;
+
+  let score = 0;
+
+  // Score mapping
+  score += abuseConfidenceScore;
+  score += totalReports * 0.5;
+
+  if (isTor) score += 30;
+
+  if (isWhitelisted) score -= 50;
+
+  if (lastReportedAt) {
+    const lastReportDate = new Date(lastReportedAt);
+    const currentDate = new Date();
+    const daysDifference = Math.floor(
+      (currentDate - lastReportDate) / (1000 * 60 * 60 * 24),
+    );
+    if (daysDifference <= 30) score += 20;
+  }
+
+  if (score >= 90) return "🔴 Critical";
+  else if (score >= 60) return "🟠 High";
+  else if (score >= 30) return "🟡 Medium";
+  else if (score >= 10) return "🔵 Low";
+  else return "🟢 None";
+}
+
+function fetchAbuseCHData(ip, apiKey) {
+  const options = {
+    hostname: "api.abuseipdb.com",
+    path: `/api/v2/check?ipAddress=${ip}&maxAgeInDays=30&verbose=true`,
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Key: apiKey,
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = "";
+
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+
+          if (json.data) {
+            if (debugMode) {
+              logger(`✅ Data from AbuseCh for ${ip} retrieved.`);
+              logger(JSON.stringify(json.data, null, 2));
+            }
+            json.data.severity = abuseSeverity(json.data);
+
+            // Cleanup fields (remove null or undefined values)
+            const cleanData = {};
+            Object.keys(json.data).forEach((key) => {
+              cleanData[key] = cleanupJson(json.data[key]);
+            });
+
+            resolve(cleanData);
+          } else {
+            logger(`❌ No data found for ${ip}.`);
+
+            resolve({});
+          }
+        } catch (parseError) {
+          if (debugMode)
+            logger(`❌ Error parsing JSON response: ${parseError.message}`);
+
+          resolve({});
+        }
+      });
+    });
+
+    req.on("error", (error) => {
+      if (debugMode) console.error(`Request error: ${error.message}`);
+      reject(error);
+    });
+
+    req.end();
+  });
+}
+
+module.exports = { fetchAbuseCHData };
+
+
+/***/ }),
+
 /***/ 804:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -1146,27 +1252,19 @@ module.exports = {
 
 /***/ }),
 
-/***/ 317:
-/***/ ((module) => {
-
-"use strict";
-module.exports = require("child_process");
-
-/***/ }),
-
-/***/ 250:
-/***/ ((module) => {
-
-"use strict";
-module.exports = require("dns");
-
-/***/ }),
-
 /***/ 896:
 /***/ ((module) => {
 
 "use strict";
 module.exports = require("fs");
+
+/***/ }),
+
+/***/ 692:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("https");
 
 /***/ }),
 
@@ -1216,313 +1314,12 @@ module.exports = require("path");
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
-var __webpack_exports__ = {};
-// src/monitor.js
-const fs = __nccwpck_require__(896);
-const path = __nccwpck_require__(928);
-const { exec } = __nccwpck_require__(317);
-const { logger } = __nccwpck_require__(804);
-const dns = __nccwpck_require__(250);
-
-const interval = parseInt(process.env["INPUT_INTERVAL"] || 1);
-const mode = process.env["INPUT_MODE"] || "log";
-const block_na = process.env["INPUT_BLOCK_NA"] === "true";
-const diskWriteInterval = 2; // Write to disk every 2 seconds
-const workspace = process.env.GITHUB_WORKSPACE;
-const debugMode = process.env["INPUT_DEBUG"] === "true";
-const hasSudo = process.env.HAS_SUDO === "true";
-
-// Load lists from environment variables
-const allowlistIPv4 = JSON.parse(process.env.ALLOWLIST_IP4 || "[]");
-const allowlistIPv6 = JSON.parse(process.env.ALLOWLIST_IP6 || "[]");
-const allowlistDomains = new Set(
-  JSON.parse(process.env.ALLOWLIST_DOMAINS || "[]"),
-);
-const allowlistProcesses = new Set(
-  JSON.parse(process.env.ALLOWLIST_PROCESSES || "[]"),
-);
-
-const blocklistIPv4 = JSON.parse(process.env.BLOCKLIST_IP4 || "[]");
-const blocklistIPv6 = JSON.parse(process.env.BLOCKLIST_IP6 || "[]");
-const blocklistDomains = new Set(
-  JSON.parse(process.env.BLOCKLIST_DOMAINS || "[]"),
-);
-const blocklistProcesses = new Set(
-  JSON.parse(process.env.BLOCKLIST_PROCESSES || "[]"),
-);
-
-if (!workspace) {
-  logger("❌ GITHUB_WORKSPACE is not set. Exiting.", "error", true);
-  process.exit(1);
-}
-
-const absoluteWorkspace = fs.realpathSync(workspace);
-const tempFilePath = path.join(
-  absoluteWorkspace,
-  "harden-runner-connections.json",
-);
-
-if (debugMode) {
-  logger(
-    `🌐 Monitoring connections every ${interval}s. Writing to ${tempFilePath} every ${diskWriteInterval}s`,
-    "info",
-    true,
-  );
-  logger(`🔍 Absolute workspace path: ${absoluteWorkspace}`, "info", true);
-  logger(`🔍 Mode: ${mode}`, "info", true);
-  logger(`🔍 Sudo: ${hasSudo}`, "info", true);
-}
-
-const connections = new Map();
-const dnsCache = new Map();
-let lastFlushTime = Date.now();
-
-// Resolve domain names from IP addresses
-const resolveDomain = (ip) => {
-  return new Promise((resolve) => {
-    if (dnsCache.has(ip)) {
-      resolve(dnsCache.get(ip));
-      return;
-    }
-
-    // First attempt
-    dns.reverse(ip, (err, hostnames) => {
-      if (err || hostnames.length === 0) {
-        // Second attempt
-        dns.lookupService(ip, 443, (err, hostname) => {
-          if (err) {
-            dnsCache.set(ip, ip); // Cache IP itself if no domain found
-            resolve(ip);
-          } else {
-            dnsCache.set(ip, hostname);
-            resolve(hostname);
-          }
-        });
-      } else {
-        const hostname = hostnames[0];
-        dnsCache.set(ip, hostname);
-        resolve(hostname);
-      }
-    });
-  });
-};
-
-// Escape special characters in regex
-const escapeRegex = (str) => {
-  return str.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-};
-
-// Matches a domain against a wildcard pattern
-const matchWildcard = (domain, domainSet) => {
-  for (const pattern of domainSet) {
-    // Convert wildcard pattern to RegExp
-    // Escape dots and replace * with .* for wildcard matching
-    const regexPattern =
-      "^" + pattern.split("*").map(escapeRegex).join(".*") + "$";
-    const regex = new RegExp(regexPattern);
-
-    // If it matches, return true
-    if (regex.test(domain)) return true;
-  }
-  return false;
-};
-
-const blockConnection = (ipAddress, ipv, pid) => {
-  // Kill the process immediately if pid is available
-  if (pid !== "N/A") {
-    if (debugMode) logger(`🚫 Trying to kill process: ${pid}`, "info", true);
-    try {
-      if (hasSudo) {
-        // Kill the process
-        process.kill(pid, "SIGKILL");
-        logger(
-          `✅ Killed process ${pid} associated with ${ipv} address: ${ipAddress}`,
-          "info",
-          true,
-        );
-      } else {
-        logger(
-          `❌ Cannot kill process ${pid} - sudo permissions are missing.`,
-          "error",
-          true,
-        );
-      }
-    } catch (error) {
-      if (debugMode)
-        logger(
-          `❌ Failed to kill process ${pid}. This is not always an issue if the process has already terminated.`,
-          "error",
-          true,
-        );
-    }
-  }
-
-  // Block the connection
-  if (debugMode)
-    logger(`🚫 Trying to block ${ipv} address: ${ipAddress}`, "info", true);
-  try {
-    if (hasSudo) {
-      let command;
-      if (ipv === "IPv4")
-        command = `sudo iptables -A OUTPUT -d ${ipAddress} -j DROP`;
-      else if (ipv === "IPv6")
-        command = `sudo ip6tables -A OUTPUT -d ${ipAddress} -j DROP`;
-      else throw new Error(`Invalid IP version: ${ipv}`);
-      if (command) {
-        exec(command, (error, stdout, stderr) => {
-          if (error) {
-            if (debugMode) {
-              logger(
-                `❌ Failed to block ${ipAddress}: ${error.message}`,
-                "error",
-                true,
-              );
-              if (stderr) logger(`⚠️ Stderr: ${stderr}`, "warn", true);
-            } else {
-              logger(`❌ Failed to block ${ipAddress}.`, "error", true);
-            }
-          } else {
-            logger(`✅ Blocked ${ipv} ${ipAddress}`, "info", true);
-          }
-        });
-      }
-    } else {
-      logger(
-        `❌ Cannot block ${ipAddress} - sudo permissions are missing.`,
-        "error",
-        true,
-      );
-    }
-  } catch (error) {
-    if (debugMode)
-      logger(
-        `❌ Failed to block ${ipAddress}: ${error.message}`,
-        "error",
-        true,
-      );
-  }
-};
-
-// Sets status based on allow/block lists
-const checkStatus = (ipAddress, domain, process) => {
-  if (blocklistIPv4.includes(ipAddress)) return "block";
-  if (allowlistIPv4.includes(ipAddress)) return "allow";
-
-  if (blocklistIPv6.includes(ipAddress)) return "block";
-  if (allowlistIPv6.includes(ipAddress)) return "allow";
-
-  if (matchWildcard(domain, blocklistDomains)) return "block";
-  if (matchWildcard(domain, allowlistDomains)) return "allow";
-
-  if (blocklistProcesses.has(process)) return "block";
-  if (allowlistProcesses.has(process)) return "allow";
-
-  if (block_na) return "block"; // N/A are blocked if block_na is true
-  return "N/A";
-};
-
-// Monitoring function
-const monitor = (command) => {
-  exec(command, async (error, stdout, stderr) => {
-    if (error) {
-      if (debugMode) logger(`❌ Error: ${error.message}`, "error", true);
-      else
-        logger(
-          `❌ Error occurred while executing monitoring command.`,
-          "error",
-          true,
-        );
-      return;
-    }
-    if (stderr) {
-      if (debugMode) logger(`⚠️ Stderr: ${stderr}`, "warn", true);
-      else
-        logger(
-          `⚠️ Stderr output detected while executing monitoring command.`,
-          "warn",
-          true,
-        );
-      return;
-    }
-
-    const lines = stdout.trim().split("\n");
-    for (const line of lines) {
-      const parts = line.split(/\s+/);
-      if (parts.length > 6) {
-        const protocol = parts[0];
-        const local = parts[3];
-        const remote = parts[4];
-        const state = parts[5];
-        const pidInfo = parts[6];
-
-        const [pid, process] = pidInfo.includes("/")
-          ? pidInfo.split("/")
-          : ["N/A", "N/A"];
-        const connectionId = `${local}-${remote}`;
-
-        let remote_ip, remote_port;
-
-        const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
-        const ipv6Regex = /^([a-fA-F0-9:]+:+)+[a-fA-F0-9]+$/;
-
-        // Split IP and port
-        const lastColon = remote.lastIndexOf(":");
-        remote_ip = remote.slice(0, lastColon);
-        remote_port = remote.slice(lastColon + 1);
-
-        // Distinguish between IPv4 and IPv6
-        if (ipv6Regex.test(remote_ip)) ipv = "IPv6";
-        else if (ipv4Regex.test(remote_ip)) ipv = "IPv4";
-        else {
-          logger(`❌ Could not parse IP address: ${remote}`, "error", true);
-          remote_ip = "N/A";
-          remote_port = "N/A";
-          ipv = "N/A";
-        }
-
-        // Perform domain resolution
-        const resolvedDomain = await resolveDomain(remote_ip);
-
-        // Check status against allow/block lists
-        const status = checkStatus(remote_ip, resolvedDomain, process);
-
-        // Block connection if necessary
-        if (mode === "block" && status === "block")
-          blockConnection(remote_ip, ipv, pid);
-
-        connections.set(connectionId, {
-          protocol: protocol,
-          ipv: ipv,
-          local_ip: local.split(":")[0],
-          local_port: local.split(":")[1],
-          remote_ip: remote_ip,
-          remote_port: remote_port,
-          pid: pid,
-          process: process,
-          domain: resolvedDomain,
-          state: state,
-          status: status,
-        });
-      }
-    }
-
-    // Write to disk every 2 seconds
-    if (Date.now() - lastFlushTime >= diskWriteInterval * 1000) {
-      const jsonArray = Array.from(connections.values());
-      fs.writeFileSync(tempFilePath, JSON.stringify(jsonArray, null, 2));
-      lastFlushTime = Date.now();
-    }
-  });
-};
-
-// Command to monitor connections
-const command = hasSudo
-  ? `sudo netstat -tunp | grep -E 'ESTABLISHED|CLOSE_WAIT|TIME_WAIT'`
-  : `netstat -tunp | grep -E 'ESTABLISHED|CLOSE_WAIT|TIME_WAIT'`;
-
-// Set interval for polling
-setInterval(() => monitor(command), interval * 1000);
-
-module.exports = __webpack_exports__;
+/******/ 	
+/******/ 	// startup
+/******/ 	// Load entry module and return exports
+/******/ 	// This entry module is referenced by other modules so it can't be inlined
+/******/ 	var __webpack_exports__ = __nccwpck_require__(744);
+/******/ 	module.exports = __webpack_exports__;
+/******/ 	
 /******/ })()
 ;

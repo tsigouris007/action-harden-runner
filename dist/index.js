@@ -8513,10 +8513,33 @@ const displayTables = (tables, title) => {
   }
 };
 
+// Returns empty string instead of null or undefined values
+function cleanupJson(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+// Filters unique rows
+function getUniqueRows(rows) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const serializedRow = JSON.stringify(row);
+    if (seen.has(serializedRow)) {
+      return false; // Duplicate row, skip it
+    }
+    seen.add(serializedRow);
+    return true; // Unique row, include it
+  });
+}
+
 module.exports = {
   logger,
   formatIptablesOutput,
   displayTables,
+  cleanupJson,
+  getUniqueRows,
 };
 
 

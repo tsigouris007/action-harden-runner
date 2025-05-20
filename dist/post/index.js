@@ -1001,6 +1001,112 @@ exports["default"] = mk_wcwidth;
 
 /***/ }),
 
+/***/ 744:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+// src/abusech.js
+const https = __nccwpck_require__(692);
+const { logger, cleanupJson } = __nccwpck_require__(804);
+const debugMode = process.env["INPUT_DEBUG"] === "true";
+
+function abuseSeverity(data) {
+  const abuseConfidenceScore = parseInt(data.abuseConfidenceScore || 0, 10);
+  const totalReports = parseInt(data.totalReports || 0, 10);
+  const isTor = data.isTor === true;
+  const lastReportedAt = data.lastReportedAt;
+  const isWhitelisted = data.isWhitelisted === true;
+
+  let score = 0;
+
+  // Score mapping
+  score += abuseConfidenceScore;
+  score += totalReports * 0.5;
+
+  if (isTor) score += 30;
+
+  if (isWhitelisted) score -= 50;
+
+  if (lastReportedAt) {
+    const lastReportDate = new Date(lastReportedAt);
+    const currentDate = new Date();
+    const daysDifference = Math.floor(
+      (currentDate - lastReportDate) / (1000 * 60 * 60 * 24),
+    );
+    if (daysDifference <= 30) score += 20;
+  }
+
+  if (score >= 90) return "🔴 Critical";
+  else if (score >= 60) return "🟠 High";
+  else if (score >= 30) return "🟡 Medium";
+  else if (score >= 10) return "🔵 Low";
+  else return "🟢 None";
+}
+
+function fetchAbuseCHData(ip, apiKey) {
+  const options = {
+    hostname: "api.abuseipdb.com",
+    path: `/api/v2/check?ipAddress=${ip}&maxAgeInDays=30&verbose=true`,
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Key: apiKey,
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = "";
+
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(data);
+
+          if (json.data) {
+            if (debugMode) {
+              logger(`✅ Data from AbuseCh for ${ip} retrieved.`);
+              logger(JSON.stringify(json.data, null, 2));
+            }
+            json.data.severity = abuseSeverity(json.data);
+
+            // Cleanup fields (remove null or undefined values)
+            const cleanData = {};
+            Object.keys(json.data).forEach((key) => {
+              cleanData[key] = cleanupJson(json.data[key]);
+            });
+
+            resolve(cleanData);
+          } else {
+            logger(`❌ No data found for ${ip}.`);
+
+            resolve({});
+          }
+        } catch (parseError) {
+          if (debugMode)
+            logger(`❌ Error parsing JSON response: ${parseError.message}`);
+
+          resolve({});
+        }
+      });
+    });
+
+    req.on("error", (error) => {
+      if (debugMode) console.error(`Request error: ${error.message}`);
+      reject(error);
+    });
+
+    req.end();
+  });
+}
+
+module.exports = { fetchAbuseCHData };
+
+
+/***/ }),
+
 /***/ 804:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -1114,10 +1220,33 @@ const displayTables = (tables, title) => {
   }
 };
 
+// Returns empty string instead of null or undefined values
+function cleanupJson(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+// Filters unique rows
+function getUniqueRows(rows) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const serializedRow = JSON.stringify(row);
+    if (seen.has(serializedRow)) {
+      return false; // Duplicate row, skip it
+    }
+    seen.add(serializedRow);
+    return true; // Unique row, include it
+  });
+}
+
 module.exports = {
   logger,
   formatIptablesOutput,
   displayTables,
+  cleanupJson,
+  getUniqueRows,
 };
 
 
@@ -1131,11 +1260,27 @@ module.exports = require("child_process");
 
 /***/ }),
 
+/***/ 236:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("console");
+
+/***/ }),
+
 /***/ 896:
 /***/ ((module) => {
 
 "use strict";
 module.exports = require("fs");
+
+/***/ }),
+
+/***/ 692:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("https");
 
 /***/ }),
 
@@ -1189,13 +1334,20 @@ var __webpack_exports__ = {};
 // src/post.js
 const fs = __nccwpck_require__(896);
 const path = __nccwpck_require__(928);
-const { Table } = __nccwpck_require__(558);
 const { execSync } = __nccwpck_require__(317);
-const { formatIptablesOutput, displayTables, logger } = __nccwpck_require__(804);
+const {
+  formatIptablesOutput,
+  displayTables,
+  logger,
+  getUniqueRows,
+} = __nccwpck_require__(804);
+const { fetchAbuseCHData } = __nccwpck_require__(744);
+const { log } = __nccwpck_require__(236);
 
 const tempRunnerPath = "/home/runner/work/_temp";
 const debugMode = process.env["INPUT_DEBUG"] === "true";
 const mode = process.env["INPUT_MODE"] || "log";
+const abuseCHAPIKey = process.env["INPUT_ABUSECH_API_KEY"] || "";
 const diskWriteInterval = 2; // Write to disk every 2 seconds
 const workspace = process.env.GITHUB_WORKSPACE;
 const pidFilePath = path.join(fs.realpathSync(workspace), "harden-runner.pid");
@@ -1209,6 +1361,7 @@ const summaryFilePath = path.join(
   "harden-runner-summary.json",
 );
 const logFilePath = path.join(tempRunnerPath, "harden-runner.log");
+const actionSummaryPath = process.env.GITHUB_STEP_SUMMARY;
 
 function sleepSync(milliseconds) {
   const start = Date.now();
@@ -1216,6 +1369,22 @@ function sleepSync(milliseconds) {
     // Busy-wait loop
   }
 }
+
+// Conditional fields from abuseCH
+const getAbuseCHFields = (abuseCHDetails) => {
+  if (!abuseCHAPIKey) return {};
+  return {
+    isWhitelisted: abuseCHDetails.isWhitelisted ?? "",
+    abuseConfidenceScore: abuseCHDetails.abuseConfidenceScore ?? "",
+    isp: abuseCHDetails.isp ?? "",
+    domain: abuseCHDetails.domain ?? "",
+    isTor: abuseCHDetails.isTor ?? "",
+    countryCode: abuseCHDetails.countryCode ?? "",
+    totalReports: abuseCHDetails.totalReports ?? "",
+    lastReportedAt: abuseCHDetails.lastReportedAt ?? "",
+    severity: abuseCHDetails.severity ?? "",
+  };
+};
 
 const isPidRunning = (pid) => {
   try {
@@ -1235,6 +1404,7 @@ if (debugMode) {
   logger(`🔍 Searching for cached PID file at: ${cachedPidFilePath}`);
   logger(`🔍 Searching for harden-runner-connections.json at: ${tempFilePath}`);
   logger(`🔍 Searching for summary file at: ${summaryFilePath}`);
+  if (abuseCHAPIKey) logger("🔍 AbuseCH API Key is set");
 
   if (mode === "block") {
     logger("\n🔍 Fetching iptables (IPv4) Rules:");
@@ -1296,66 +1466,108 @@ if (fs.existsSync(tempFilePath)) {
 
   const connectionsData = JSON.parse(fs.readFileSync(tempFilePath, "utf-8"));
 
-  const summary = connectionsData.reduce((acc, conn) => {
-    if (!acc[conn.protocol]) {
-      acc[conn.protocol] = [];
+  const generateSummary = async () => {
+    const summary = [];
+    const abusechCache = new Map();
+
+    for (const conn of connectionsData) {
+      let abuseCHDetails = {};
+      if (abuseCHAPIKey) {
+        try {
+          // Check if the IP is already in the cache
+          if (abusechCache.has(conn.remote_ip))
+            abuseCHDetails = abusechCache.get(conn.remote_ip);
+          else
+            abuseCHDetails = await fetchAbuseCHData(
+              conn.remote_ip,
+              abuseCHAPIKey,
+            );
+          if (abuseCHDetails) abusechCache.set(conn.remote_ip, abuseCHDetails);
+        } catch (error) {
+          if (debugMode)
+            logger(
+              `❌ Failed to fetch data from AbuseCH API: ${error.message}`,
+              "error",
+            );
+        }
+      }
+
+      summary.push({
+        Protocol: conn.protocol,
+        LocalIP: conn.local_ip,
+        LocalPort: conn.local_port,
+        RemoteIP: conn.remote_ip,
+        RemotePort: conn.remote_port,
+        PID: conn.pid,
+        Process: conn.process,
+        IPv: conn.ipv,
+        Domain: conn.domain,
+        State: conn.state,
+        Status: conn.status,
+        ...getAbuseCHFields(abuseCHDetails),
+      });
     }
-    acc[conn.protocol].push({
-      LocalIP: conn.local_ip,
-      LocalPort: conn.local_port,
-      RemoteIP: conn.remote_ip,
-      RemotePort: conn.remote_port,
-      PID: conn.pid,
-      Process: conn.process,
-      IPv: conn.ipv,
-      Domain: conn.domain,
-      State: conn.state,
-      Status: conn.status,
+
+    return summary;
+  };
+
+  generateSummary()
+    .then((summary) => {
+      // Base columns
+      const columns = [
+        { name: "Protocol", alignment: "left" },
+        { name: "IPv", alignment: "left" },
+        { name: "LocalIP", alignment: "left" },
+        { name: "LocalPort", alignment: "left" },
+        { name: "RemoteIP", alignment: "left" },
+        { name: "RemotePort", alignment: "left" },
+        { name: "PID", alignment: "left" },
+        { name: "Process", alignment: "left" },
+        { name: "Domain", alignment: "left" },
+        { name: "State", alignment: "left" },
+        { name: "Status", alignment: "left" },
+      ];
+
+      if (abuseCHAPIKey) {
+        logger("🔍 Fetching additional data from AbuseCH API");
+        columns.push(
+          { name: "isWhitelisted", alignment: "left" },
+          { name: "abuseConfidenceScore", alignment: "left" },
+          { name: "isp", alignment: "left" },
+          { name: "domain", alignment: "left" },
+          { name: "isTor", alignment: "left" },
+          { name: "countryCode", alignment: "left" },
+          { name: "totalReports", alignment: "left" },
+          { name: "lastReportedAt", alignment: "left" },
+          { name: "severity", alignment: "left" },
+        );
+      }
+
+      const columnNames = columns.map((col) => col.name);
+      const markdownTable = [];
+      markdownTable.push(`| ${columnNames.join(" | ")} |`);
+      markdownTable.push(`| ${columnNames.map(() => "---").join(" | ")} |`);
+
+      uniqueRowSummary = getUniqueRows(summary);
+
+      uniqueRowSummary.forEach((row) => {
+        const rowData = columnNames.map((col) => row[col] ?? "N/A");
+        markdownTable.push(`| ${rowData.join(" | ")} |`);
+      });
+
+      const markdownContent = markdownTable.join("\n");
+      fs.appendFileSync(actionSummaryPath, `## Connection Report\n\n`);
+      fs.appendFileSync(actionSummaryPath, markdownContent);
+      fs.appendFileSync(actionSummaryPath, `\n\n---\n`);
+
+      fs.writeFileSync(summaryFilePath, JSON.stringify(summary, null, 2));
+      if (debugMode) logger(`✅ Summary written to ${summaryFilePath}`);
+      fs.unlinkSync(summaryFilePath);
+      if (debugMode) logger(`✅ Summary file deleted.`);
+    })
+    .catch((error) => {
+      logger(`❌ Failed to generate summary: ${error.message}`, "error");
     });
-    return acc;
-  }, {});
-
-  // Display a table for better visualization
-  logger("📊 Active Connections:");
-  const p = new Table({
-    columns: [
-      { name: "Protocol", alignment: "left" },
-      { name: "IPv", alignment: "left" },
-      { name: "LocalIP", alignment: "left" },
-      { name: "LocalPort", alignment: "left" },
-      { name: "RemoteIP", alignment: "left" },
-      { name: "RemotePort", alignment: "left" },
-      { name: "PID", alignment: "left" },
-      { name: "Process", alignment: "left" },
-      { name: "Domain", alignment: "left" },
-      { name: "State", alignment: "left" },
-      { name: "Status", alignment: "left" },
-    ],
-  });
-
-  connectionsData.forEach((connection) => {
-    p.addRow({
-      Protocol: connection.protocol,
-      IPv: connection.ipv,
-      LocalIP: connection.local_ip,
-      LocalPort: connection.local_port,
-      RemoteIP: connection.remote_ip,
-      RemotePort: connection.remote_port,
-      PID: connection.pid,
-      Process: connection.process,
-      Domain: connection.domain,
-      State: connection.state,
-      Status: connection.status,
-    });
-  });
-
-  const tableOutput = p.render();
-  logger(`\n${tableOutput}`);
-
-  fs.writeFileSync(summaryFilePath, JSON.stringify(summary, null, 2));
-  if (debugMode) logger(`✅ Summary written to ${summaryFilePath}`);
-  fs.unlinkSync(summaryFilePath);
-  if (debugMode) logger(`✅ Summary file deleted.`);
 } else {
   logger("⚠️ No connection data found.");
 }
@@ -1365,8 +1577,16 @@ try {
   const logContents = fs.readFileSync(logFilePath, "utf8");
   logger(`\n${logContents}`, "info", false, true);
 } catch (error) {
-  logger(`❌ Failed to read log file: ${error.message}`, "error", false, true);
+  if (debugMode)
+    logger(
+      `❌ Failed to read log file: ${error.message}`,
+      "error",
+      false,
+      true,
+    );
 }
+
+logger("🏁 Finished execution.");
 
 module.exports = __webpack_exports__;
 /******/ })()

@@ -17,6 +17,10 @@ inputs:
     description: "Monitoring polling interval in seconds. Default: '1'."
     required: false
     default: "1"
+  abusech_api_key:
+    description: "AbuseCH API key. Default: ''."
+    required: false
+    default: ""
   debug:
     description: "Enable debug mode. Default: 'false'."
     required: false

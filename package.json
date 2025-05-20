@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "build": "ncc build src/index.js -o dist && ncc build src/post.js -o dist/post && ncc build src/monitor.js -o dist/monitor && ncc build src/utils.js -o dist/utils",
+    "build": "ncc build src/index.js -o dist && ncc build src/post.js -o dist/post && ncc build src/monitor.js -o dist/monitor && ncc build src/utils.js -o dist/utils && ncc build src/abusech.js -o dist/abusech",
     "test": "jest"
   },
   "keywords": [],

@@ -14,8 +14,8 @@ This action runs a non blocking monitor in the background while your workflows r
 | `mode` | <p>Mode to run the action. Allowed: 'log', 'block'. Default: 'log'.</p> | `false` | `log` |
 | `block_na` | <p>Block all N/A connections. Default: 'false'.</p> | `false` | `false` |
 | `interval` | <p>Monitoring polling interval in seconds. Default: '1'.</p> | `false` | `1` |
+| `abusech_api_key` | <p>AbuseCH API key. Default: ''.</p> | `false` | `""` |
 | `debug` | <p>Enable debug mode. Default: 'false'.</p> | `false` | `false` |
-
 
 ### Runs
 
@@ -50,6 +50,12 @@ This action is a `node20` action.
     # Required: false
     # Default: 1
 
+    abusech_api_key: ""
+    # AbuseCH API key. Default: ''.
+    #
+    # Required: false
+    # Default: ""
+
     debug: "false"
     # Enable debug mode. Default: 'false'.
     #
@@ -62,6 +68,7 @@ This action is a `node20` action.
 3. `block_na`: Very aggressive, blocking everything that is not included in the allow lists. May hang your workflow.
 4. `interval`: A suggested value for starters is between 0.5 - 1. You can operate in smaller intervals but that makes things more CPU intensive. Still, the action is very lightweight and runs in the background. Tests on values of 0.2 - 0.5 were also successful. Note that a big interval might miss connections.
 5. `debug`: A debug log for your run. If enabled, a really verbose output will be at your disposal.
+6. `abusech_api_key`: If set, enhances your run output with Threat Intel from AbuseCH database. You can easily get your own API key from [abuseipdb.com](https://www.abuseipdb.com/) by registering a free account. Note that each job run caches a previous API call to save you some quota - no caches between different jobs. Mind the quotas.
 
 You can also maintain a JSON artifact file as shown upon completion with a simple step:
 ```yaml
